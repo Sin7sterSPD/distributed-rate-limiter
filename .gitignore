@@ -1,0 +1,24 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Test binary, generated with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+*.prof
+coverage.html
+coverage.txt
+
+# Go workspace files (Local development setups)
+go.work
+go.work.sum
+
+# Environment variables (Local secrets)
+.env
+.env.local
