@@ -1,4 +1,4 @@
-package stdlib
+package main
 
 import (
 	"log"
@@ -12,7 +12,8 @@ import (
 func main() {
 	limiter, err := rl.New(rl.Config{
 		Algorithm:    rl.TokenBucket,
-		Limit:        100,
+		Limit:        10,
+		Burst:        10,
 		Window:       time.Minute,
 		Backend:      "redis",
 		RedisAddr:    "localhost:6379",

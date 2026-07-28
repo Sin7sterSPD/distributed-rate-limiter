@@ -2,8 +2,11 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+var ErrBackendUnavailable = errors.New("backend unavailable")
 
 type BackendResult struct {
 	Allowed    bool

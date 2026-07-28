@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"time"
 
-	distributedratelimiter "github.com/Sin7sterSPD/distributed-rate-limiter"
 	"github.com/Sin7sterSPD/distributed-rate-limiter/internal/circuitbreaker"
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -77,7 +76,7 @@ func NewRedisBackend(cfg RedisConfig) (*RedisBackend, error) {
 func (rb *RedisBackend) GetAndUpdate(ctx context.Context, key string, cost int) (*BackendResult, error) {
 
 	if err := rb.breaker.Allow(); err != nil {
-		return nil, fmt.Errorf("%w: circuit breaker open", distributedratelimiter.ErrBackendUnavailable)
+		return nil, fmt.Errorf("%w: circuit breaker open", ErrBackendUnavailable)
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, rb.cfg.Timeout)
@@ -116,7 +115,7 @@ func (rb *RedisBackend) GetAndUpdate(ctx context.Context, key string, cost int) 
 	if err != nil {
 		rb.breaker.RecordFailure()
 		slog.Warn("ratelimiter redis script run failed", "key", key, "error", err)
-		return nil, fmt.Errorf("%w: %v", distributedratelimiter.ErrBackendUnavailable, err)
+		return nil, fmt.Errorf("%w: %v", ErrBackendUnavailable, err)
 	}
 
 	rb.breaker.RecordSuccess()

@@ -14,7 +14,7 @@ func EchoMiddleware(limiter rl.Limiter, keyFunc rl.KeyFunc) echo.MiddlewareFunc 
 		keyFunc = DefaultKeyFunc
 	}
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			key := keyFunc(c.Request())
 			res, err := limiter.Allow(c.Request().Context(), key)
 			if err != nil {
