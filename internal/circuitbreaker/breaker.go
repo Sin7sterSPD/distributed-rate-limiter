@@ -1,4 +1,4 @@
-package circutbreaker
+package circuitbreaker
 
 import (
 	"errors"

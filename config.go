@@ -9,7 +9,7 @@ type Algorithm int
 
 const (
 	TokenBucket Algorithm = iota
-	SlidingWind
+	SlidingWindow
 )
 
 type FallbackMode int
@@ -84,5 +84,3 @@ func (c *Config) validate() error {
 	}
 	return nil
 }
-
-
