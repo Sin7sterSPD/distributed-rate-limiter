@@ -1,6 +1,9 @@
 package distributedratelimiter
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type Algorithm int
 
@@ -49,5 +52,37 @@ type Config struct {
 }
 
 func (c *Config) validate() error {
-
+	if c.Limit <= 0 {
+		return fmt.Errorf("%w: Limit must be > 0", ErrInvalidConfig)
+	}
+	if c.Window <= 0 {
+		return fmt.Errorf("%w: Window must be > 0", ErrInvalidConfig)
+	}
+	if c.Backend == "" {
+		c.Backend = "memory"
+	}
+	if c.Backend == "redis" && c.RedisAddr == "" {
+		return fmt.Errorf("%w: RedisAddr required when Backend is 'redis'", ErrInvalidConfig)
+	}
+	if c.Backend != "memory" && c.Backend != "redis" {
+		return fmt.Errorf("%w: Backend must be 'memory' or 'redis'", ErrInvalidConfig)
+	}
+	if c.KeyPrefix == "" {
+		c.KeyPrefix = "ratelimit"
+	}
+	if c.Burst == 0 {
+		c.Burst = c.Limit
+	}
+	if c.RedisTimeout == 0 {
+		c.RedisTimeout = 100 * time.Millisecond
+	}
+	if c.MaxMemoryKeys == 0 {
+		c.MaxMemoryKeys = 100_000
+	}
+	if c.MemorySweepInterval == 0 {
+		c.MemorySweepInterval = 60 * time.Second
+	}
+	return nil
 }
+
+
