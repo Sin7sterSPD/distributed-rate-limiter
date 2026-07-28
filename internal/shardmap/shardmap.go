@@ -19,7 +19,6 @@ type ShardedMap[V any] struct {
 	shards [numShards]*Shard[V]
 }
 
-// New creates a ShardedMap with pre-allocated inner maps.
 func New[V any]() *ShardedMap[V] {
 	sm := &ShardedMap[V]{}
 	for i := 0; i < numShards; i++ {
@@ -52,8 +51,6 @@ func (sm *ShardedMap[V]) Set(key string, value V) {
 	s.mu.Unlock()
 }
 
-// GetOrCreate returns an existing value or calls create() to make a new one.
-// The entire operation is atomic within the shard — no double-initialization.
 func (sm *ShardedMap[V]) GetOrCreate(key string, create func() V) V {
 	s := sm.shard(key)
 	s.mu.Lock()
@@ -74,9 +71,6 @@ func (sm *ShardedMap[V]) Delete(key string) {
 	s.mu.Unlock()
 }
 
-// Range iterates all key-value pairs across all shards.
-// The callback fn receives each key and value.
-// fn must not call other ShardedMap methods (deadlock risk).
 func (sm *ShardedMap[V]) Range(fn func(key string, value V) bool) {
 	for _, s := range sm.shards {
 		s.mu.RLock()
