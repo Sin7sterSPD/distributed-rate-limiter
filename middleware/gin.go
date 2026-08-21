@@ -18,12 +18,12 @@ func GinMiddleware(limiter rl.Limiter, keyFunc rl.KeyFunc) gin.HandlerFunc {
 		key := keyFunc(c.Request)
 		res, err := limiter.Allow(c.Request.Context(), key)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "rate limiter error"})
+			// Limiter fallback already applied; fail-open rather than 500.
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "rate limiter unavailable"})
 			return
 		}
 
-		c.Header("X-RateLimit-Limit", strconv.Itoa(res.Limit))
-		c.Header("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+		setRateLimitHeaders(c.Writer.Header(), res)
 
 		if !res.Allowed {
 			c.Header("Retry-After", strconv.Itoa(int(res.RetryAfter.Seconds())))

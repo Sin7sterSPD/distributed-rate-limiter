@@ -41,16 +41,26 @@ func New(cfg HTTPConfig) func(http.Handler) http.Handler {
 
 			res, err := cfg.Limiter.Allow(r.Context(), key)
 			if err != nil {
-				// Backend error (not a limit exceeded) — treat as internal error.
-				// The limiter's own fallback logic should prevent this from being common.
-				http.Error(w, `{"error":"rate limiter internal error"}`, http.StatusInternalServerError)
+				// The limiter's own FallbackMode handles backend failures; an
+				// error here means even the fallback failed. Fail-open (let the
+				// request through) rather than taking the API down with 500s.
+				http.Error(w, `{"error":"rate limiter unavailable"}`, http.StatusServiceUnavailable)
 				return
 			}
 
-			// Always set informational headers (RFC 6585 + de-facto standards)
+			// Informational headers: de-facto X-RateLimit-* plus the
+			// IETF draft RateLimit-* fields.
 			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(res.Limit))
 			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
-			w.Header().Set("X-RateLimit-Window", res.Window.String())
+			w.Header().Set("RateLimit-Limit", strconv.Itoa(res.Limit))
+			w.Header().Set("RateLimit-Remaining", strconv.Itoa(res.Remaining))
+			if res.RetryAfter > 0 {
+				secs := int(res.RetryAfter.Seconds())
+				if secs < 1 {
+					secs = 1
+				}
+				w.Header().Set("RateLimit-Reset", strconv.Itoa(secs))
+			}
 
 			if !res.Allowed {
 				cfg.OnReject(w, r, res)
@@ -62,21 +72,46 @@ func New(cfg HTTPConfig) func(http.Handler) http.Handler {
 	}
 }
 
-// DefaultKeyFunc extracts the client IP from the request.
-// Trust chain: X-Forwarded-For (leftmost) → X-Real-IP → RemoteAddr.
-// Note: Only trust X-Forwarded-For if your infrastructure sets it reliably.
+// DefaultKeyFunc extracts the client IP from the request, trusting no proxy
+// headers: it always uses RemoteAddr. This is the safe default — XFF-based
+// extraction is spoofable unless you know your proxy topology.
 func DefaultKeyFunc(r *http.Request) string {
-	// X-Forwarded-For can contain a comma-separated chain; use leftmost (client IP)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if ip := strings.TrimSpace(parts[0]); ip != "" {
-			return ip
+	return remoteIP(r)
+}
+
+// NewTrustedProxyKeyFunc returns a KeyFunc that walks X-Forwarded-For from
+// rightmost (the proxy closest to your server) leftwards by proxyHops entries,
+// which cannot be spoofed when every entry in the chain is a proxy you control.
+//
+//	proxyHops = 0 → ignore XFF entirely (same as DefaultKeyFunc)
+//	proxyHops = 1 → trust one proxy (LB) in front of this server
+//	proxyHops = 2 → trust LB + CDN chain
+//
+// Falls back to RemoteAddr if the header is missing/shorter than expected.
+func NewTrustedProxyKeyFunc(proxyHops int) rl.KeyFunc {
+	if proxyHops <= 0 {
+		return DefaultKeyFunc
+	}
+	return func(r *http.Request) string {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			// Walk from rightmost: index len-1 is the nearest proxy.
+			idx := len(parts) - proxyHops
+			if idx >= 0 {
+				if ip := strings.TrimSpace(parts[idx]); ip != "" {
+					return ip
+				}
+			}
 		}
+		if xri := r.Header.Get("X-Real-IP"); xri != "" && proxyHops > 0 {
+			return strings.TrimSpace(xri)
+		}
+		return remoteIP(r)
 	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-	// RemoteAddr is "host:port"; extract just the host
+}
+
+// remoteIP extracts the host portion of RemoteAddr.
+func remoteIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -95,6 +130,22 @@ func APIKeyFunc(r *http.Request) string {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
 	return DefaultKeyFunc(r) // fallback to IP
+}
+
+// setRateLimitHeaders writes the de-facto X-RateLimit-* headers plus the
+// IETF draft RateLimit-* fields onto an http.Header.
+func setRateLimitHeaders(h http.Header, res *rl.Result) {
+	h.Set("X-RateLimit-Limit", strconv.Itoa(res.Limit))
+	h.Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+	h.Set("RateLimit-Limit", strconv.Itoa(res.Limit))
+	h.Set("RateLimit-Remaining", strconv.Itoa(res.Remaining))
+	if res.RetryAfter > 0 {
+		secs := int(res.RetryAfter.Seconds())
+		if secs < 1 {
+			secs = 1
+		}
+		h.Set("RateLimit-Reset", strconv.Itoa(secs))
+	}
 }
 
 // DefaultRejectHandler sends a 429 Too Many Requests response

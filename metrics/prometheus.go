@@ -1,3 +1,6 @@
+
+
+
 package metrics
 
 import (
@@ -8,11 +11,13 @@ import (
 )
 
 type Metrics struct {
-	RequestsTotal  *prometheus.CounterVec
-	Remaining      *prometheus.GaugeVec
-	LatencySeconds *prometheus.HistogramVec
-	RedisErrors    *prometheus.CounterVec
-	FallbackTotal  *prometheus.CounterVec
+	RequestsTotal    *prometheus.CounterVec
+	Remaining        *prometheus.GaugeVec
+	LatencySeconds   *prometheus.HistogramVec
+	RedisErrors      *prometheus.CounterVec
+	FallbackTotal    *prometheus.CounterVec
+	BlockedCacheHits prometheus.Counter
+	BreakerState     *prometheus.GaugeVec
 }
 
 func NewMetrics(namespace string) *Metrics {
@@ -61,6 +66,23 @@ func NewMetrics(namespace string) *Metrics {
 				Help:      "Number of times fallback mode was activated.",
 			},
 			[]string{"mode"},
+		),
+
+		BlockedCacheHits: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "ratelimiter_blocked_cache_hits_total",
+				Help:      "Rejections served from the local blocked-decision cache without a backend call.",
+			},
+		),
+
+		BreakerState: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "ratelimiter_breaker_state",
+				Help:      "Circuit breaker state: 0=closed, 1=half-open, 2=open.",
+			},
+			[]string{"backend"},
 		),
 	}
 }

@@ -6,10 +6,17 @@ import (
 	"time"
 )
 
+// SlidingWindowState holds the two fixed-window counters used by the
+// sliding-window counter algorithm (weighted estimate of previous + current).
 type SlidingWindowState struct {
-	mu       sync.Mutex
-	requests []time.Time // sorted ascending; oldest first
-	expiry   time.Time
+	mu sync.Mutex
+
+	prevCount int64
+	currCount int64
+
+	// windowStart is the beginning of the current fixed window.
+	windowStart time.Time
+	expiry      time.Time
 }
 
 type SlidingWindowConfig struct {
@@ -21,40 +28,40 @@ func (cfg *SlidingWindowConfig) Evaluate(state *SlidingWindowState, cost int, no
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	windowStart := now.Add(-cfg.Window)
-
-	valid := state.requests[:0]
-	for _, t := range state.requests {
-		if t.After(windowStart) {
-			valid = append(valid, t)
-		}
-	}
-	state.requests = valid
+	cfg.roll(state, now)
 	state.expiry = now.Add(cfg.Window * 2)
 
-	current := len(state.requests)
+	fLimit := float64(cfg.Limit)
+	elapsed := now.Sub(state.windowStart).Seconds()
+	weight := 1 - elapsed/cfg.Window.Seconds()
+	if weight < 0 {
+		weight = 0
+	}
+	used := float64(state.currCount) + float64(state.prevCount)*weight
 
-	if current+cost <= cfg.Limit {
-
-		for i := 0; i < cost; i++ {
-			state.requests = append(state.requests, now)
-		}
+	if used+float64(cost) <= fLimit {
+		state.currCount += int64(cost)
 		return Result{
 			Allowed:   true,
-			Remaining: cfg.Limit - current - cost,
+			Remaining: cfg.Limit - int(math.Ceil(used)) - cost,
 		}
 	}
 
-	var retryAfter time.Duration
-	if len(state.requests) > 0 {
-		oldestExpiry := state.requests[0].Add(cfg.Window)
-		waitSecs := math.Ceil(oldestExpiry.Sub(now).Seconds())
-		if waitSecs < 1 {
-			waitSecs = 1
+	// Estimate when enough of the previous window ages out for this request to
+	// pass. Conservative: report at least 1 second, at most one window.
+	retryAfter := cfg.Window
+	if state.prevCount > 0 {
+		need := used + float64(cost) - fLimit // excess to shed
+		shedPerSec := float64(state.prevCount) / cfg.Window.Seconds()
+		if shedPerSec > 0 {
+			retryAfter = time.Duration(math.Ceil(need/shedPerSec)) * time.Second
 		}
-		retryAfter = time.Duration(waitSecs) * time.Second
-	} else {
+	}
+	if retryAfter < time.Second {
 		retryAfter = time.Second
+	}
+	if retryAfter > cfg.Window {
+		retryAfter = cfg.Window
 	}
 
 	return Result{
@@ -62,6 +69,28 @@ func (cfg *SlidingWindowConfig) Evaluate(state *SlidingWindowState, cost int, no
 		Remaining:  0,
 		RetryAfter: retryAfter,
 	}
+}
+
+// roll advances the fixed-window counters if `now` has crossed into a new
+// window. Must be called with state.mu held.
+func (cfg *SlidingWindowConfig) roll(state *SlidingWindowState, now time.Time) {
+	if state.windowStart.IsZero() {
+		state.windowStart = now.Truncate(cfg.Window)
+		return
+	}
+
+	elapsedWindows := int64(now.Sub(state.windowStart) / cfg.Window)
+	if elapsedWindows <= 0 {
+		return
+	}
+	if elapsedWindows == 1 {
+		state.prevCount = state.currCount
+	} else {
+		// More than a full window has passed: both counters are stale.
+		state.prevCount = 0
+	}
+	state.currCount = 0
+	state.windowStart = state.windowStart.Add(time.Duration(elapsedWindows) * cfg.Window)
 }
 
 func (s *SlidingWindowState) IsExpired(now time.Time) bool {

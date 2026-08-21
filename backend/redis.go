@@ -5,11 +5,11 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"strconv"
 	"time"
 
 	"github.com/Sin7sterSPD/distributed-rate-limiter/internal/circuitbreaker"
+	"github.com/Sin7sterSPD/distributed-rate-limiter/metrics"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -29,6 +29,13 @@ type RedisConfig struct {
 	DB        int
 	Timeout   time.Duration
 	KeyPrefix string
+
+	// MaxFailures is the number of consecutive failures before the circuit
+	// breaker opens. Default: 5.
+	MaxFailures int
+	// BreakerTimeout is how long the breaker stays open before probing.
+	// Default: 10s.
+	BreakerTimeout time.Duration
 }
 
 type RedisBackend struct {
@@ -36,6 +43,7 @@ type RedisBackend struct {
 	script  *goredis.Script
 	cfg     RedisConfig
 	breaker *circuitbreaker.Breaker
+	metrics *metrics.Metrics
 }
 
 func NewRedisBackend(cfg RedisConfig) (*RedisBackend, error) {
@@ -54,12 +62,19 @@ func NewRedisBackend(cfg RedisConfig) (*RedisBackend, error) {
 	}
 	script := goredis.NewScript(luaSrc)
 
+	breakerCfg := circuitbreaker.Config{
+		MaxFailures: cfg.MaxFailures,
+		Timeout:     cfg.BreakerTimeout,
+	}
+
 	rb := &RedisBackend{
 		client:  client,
 		script:  script,
 		cfg:     cfg,
-		breaker: circuitbreaker.New(circuitbreaker.Config{MaxFailures: 5, Timeout: 10 * time.Second}),
+		breaker: circuitbreaker.New(breakerCfg),
+		metrics: metrics.NewMetrics("app"),
 	}
+	rb.observeBreaker()
 
 	pingCtx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer cancel()
@@ -89,7 +104,6 @@ func (rb *RedisBackend) GetAndUpdate(ctx context.Context, key string, cost int) 
 	var args []interface{}
 
 	if rb.cfg.Algorithm == 0 {
-		capacity := float64(rb.cfg.Burst)
 		refillRate := float64(rb.cfg.Limit) / rb.cfg.Window.Seconds()
 		args = []interface{}{
 			strconv.Itoa(rb.cfg.Burst),      // ARGV[1] capacity
@@ -98,15 +112,13 @@ func (rb *RedisBackend) GetAndUpdate(ctx context.Context, key string, cost int) 
 			strconv.Itoa(cost),              // ARGV[4] cost
 			strconv.FormatInt(ttlSecs, 10),  // ARGV[5] TTL
 		}
-		_ = capacity // used above
-	} else { // Sliding Window
+	} else { // Sliding Window Counter
 		windowMs := rb.cfg.Window.Milliseconds()
-		nonce := fmt.Sprintf("%d-%d", nowMs, rand.Int63()) // unique member for ZADD
 		args = []interface{}{
 			strconv.FormatInt(windowMs, 10), // ARGV[1] window ms
 			strconv.FormatInt(nowMs, 10),    // ARGV[2] now ms
 			strconv.Itoa(rb.cfg.Limit),      // ARGV[3] limit
-			nonce,                           // ARGV[4] member
+			strconv.Itoa(cost),              // ARGV[4] cost
 			strconv.FormatInt(ttlSecs, 10),  // ARGV[5] TTL
 		}
 	}
@@ -114,11 +126,14 @@ func (rb *RedisBackend) GetAndUpdate(ctx context.Context, key string, cost int) 
 	res, err := rb.script.Run(callCtx, rb.client, []string{fullKey}, args...).Int64Slice()
 	if err != nil {
 		rb.breaker.RecordFailure()
+		rb.observeBreaker()
+		rb.metrics.RedisErrors.WithLabelValues("script_run").Inc()
 		slog.Warn("ratelimiter redis script run failed", "key", key, "error", err)
 		return nil, fmt.Errorf("%w: %v", ErrBackendUnavailable, err)
 	}
 
 	rb.breaker.RecordSuccess()
+	rb.observeBreaker()
 
 	allowed := res[0] == 1
 	remaining := int(res[1])
@@ -133,4 +148,19 @@ func (rb *RedisBackend) GetAndUpdate(ctx context.Context, key string, cost int) 
 
 func (rb *RedisBackend) Close() error {
 	return rb.client.Close()
+}
+
+// observeBreaker exports the current breaker state as a gauge value
+// (0=closed, 1=half-open, 2=open).
+func (rb *RedisBackend) observeBreaker() {
+	var v float64
+	switch rb.breaker.State() {
+	case circuitbreaker.StateHalfOpen:
+		v = 1
+	case circuitbreaker.StateOpen:
+		v = 2
+	default:
+		v = 0
+	}
+	rb.metrics.BreakerState.WithLabelValues("redis").Set(v)
 }

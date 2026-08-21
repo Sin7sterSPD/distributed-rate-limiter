@@ -72,6 +72,10 @@ func (mb *MemoryBackend) GetAndUpdate(ctx context.Context, key string, cost int)
 
 	now := time.Now()
 
+	if mb.cfg.MaxKeys > 0 && mb.entries.Len() >= mb.cfg.MaxKeys {
+		mb.enforceMaxKeys()
+	}
+
 	if mb.cfg.Algorithm == 0 { // TokenBucket
 		entry := mb.entries.GetOrCreate(key, func() *memoryEntry {
 			return &memoryEntry{tbState: &algorithm.TokenBucketState{}}
@@ -106,20 +110,18 @@ func (mb *MemoryBackend) sweeper() {
 			return
 		case <-ticker.C:
 			now := time.Now()
-			removed := 0
-			mb.entries.Range(func(key string, entry *memoryEntry) bool {
-				expired := false
+			// DeleteIf mutates under each shard's write lock; using Range+Delete
+			// here would self-deadlock (RLock then Lock on the same shard).
+			removed := mb.entries.DeleteIf(func(key string, entry *memoryEntry) bool {
 				if entry.tbState != nil {
-					expired = entry.tbState.IsExpired(now)
-				} else if entry.swState != nil {
-					expired = entry.swState.IsExpired(now)
+					return entry.tbState.IsExpired(now)
 				}
-				if expired {
-					mb.entries.Delete(key)
-					removed++
+				if entry.swState != nil {
+					return entry.swState.IsExpired(now)
 				}
-				return true // continue iteration
+				return true
 			})
+			mb.enforceMaxKeys()
 			if removed > 0 {
 				slog.Info("ratelimiter memory sweeper", "removed_keys", removed, "remaining_keys", mb.entries.Len())
 			}
@@ -130,4 +132,42 @@ func (mb *MemoryBackend) sweeper() {
 func (mb *MemoryBackend) Close() error {
 	close(mb.stopCh)
 	return nil
+}
+
+// enforceMaxKeys bounds memory usage by evicting expired entries first, then
+// (if still over budget) the oldest entries regardless of expiry. Called from
+// GetAndUpdate and the sweeper; safe under concurrency because DeleteIf takes
+// per-shard write locks.
+func (mb *MemoryBackend) enforceMaxKeys() {
+	max := mb.cfg.MaxKeys
+	if max <= 0 {
+		return
+	}
+	now := time.Now()
+	// Pass 1: drop expired entries.
+	removed := mb.entries.DeleteIf(func(key string, entry *memoryEntry) bool {
+		if entry.tbState != nil {
+			return entry.tbState.IsExpired(now)
+		}
+		if entry.swState != nil {
+			return entry.swState.IsExpired(now)
+		}
+		return true
+	})
+	if removed > 0 && mb.entries.Len() <= max {
+		return
+	}
+	if mb.entries.Len() <= max {
+		return
+	}
+	// Pass 2: still over budget — evict arbitrary entries (map iteration order,
+	// which approximates random eviction) until within budget.
+	overflow := mb.entries.Len() - max
+	mb.entries.DeleteIf(func(key string, entry *memoryEntry) bool {
+		if overflow <= 0 {
+			return false
+		}
+		overflow--
+		return true
+	})
 }

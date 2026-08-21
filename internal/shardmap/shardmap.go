@@ -71,6 +71,25 @@ func (sm *ShardedMap[V]) Delete(key string) {
 	s.mu.Unlock()
 }
 
+// DeleteIf removes every entry for which pred returns true.
+// The predicate runs while the shard's write lock is held, so it must not
+// call back into the map. This avoids the RLock→Lock self-deadlock that
+// occurs when mutating during Range.
+func (sm *ShardedMap[V]) DeleteIf(pred func(key string, value V) bool) int {
+	removed := 0
+	for _, s := range sm.shards {
+		s.mu.Lock()
+		for k, v := range s.items {
+			if pred(k, v) {
+				delete(s.items, k)
+				removed++
+			}
+		}
+		s.mu.Unlock()
+	}
+	return removed
+}
+
 func (sm *ShardedMap[V]) Range(fn func(key string, value V) bool) {
 	for _, s := range sm.shards {
 		s.mu.RLock()

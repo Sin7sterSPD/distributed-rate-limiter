@@ -42,6 +42,13 @@ func New(cfg Config) *Breaker {
 	return &Breaker{cfg: cfg, state: StateClosed}
 }
 
+// State returns the current breaker state (closed, open, or half-open).
+func (b *Breaker) State() State {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.state
+}
+
 // Allow returns nil if the request should proceed, ErrCircuitOpen if blocked.
 func (b *Breaker) Allow() error {
 	b.mu.Lock()
@@ -81,11 +88,4 @@ func (b *Breaker) RecordFailure() {
 	if b.failures >= b.cfg.MaxFailures {
 		b.state = StateOpen
 	}
-}
-
-// State returns the current breaker state (for metrics/logging).
-func (b *Breaker) State() State {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.state
 }

@@ -7,16 +7,19 @@ import (
 	"time"
 
 	"github.com/Sin7sterSPD/distributed-rate-limiter/backend"
+	"github.com/Sin7sterSPD/distributed-rate-limiter/internal/blockedcache"
+	"github.com/Sin7sterSPD/distributed-rate-limiter/internal/jitter"
 	"github.com/Sin7sterSPD/distributed-rate-limiter/metrics"
 )
 
 type limiterImpl struct {
-	cfg         Config
-	primary     backend.Backend // Redis or Memory (as configured)
-	fallback    backend.Backend // Memory backend (used on Redis failure)
-	metrics     *metrics.Metrics
-	algoName    string
-	backendName string
+	cfg          Config
+	primary      backend.Backend // Redis or Memory (as configured)
+	fallback     backend.Backend // Memory backend (used on Redis failure)
+	metrics      *metrics.Metrics
+	algoName     string
+	backendName  string
+	blockedCache *blockedcache.BlockedCache
 }
 
 func New(cfg Config) (Limiter, error) {
@@ -43,11 +46,12 @@ func New(cfg Config) (Limiter, error) {
 
 	if cfg.Backend == "memory" {
 		return &limiterImpl{
-			cfg:         cfg,
-			primary:     memBackend,
-			metrics:     m,
-			algoName:    algoName,
-			backendName: "memory",
+			cfg:          cfg,
+			primary:      memBackend,
+			metrics:      m,
+			algoName:     algoName,
+			backendName:  "memory",
+			blockedCache: blockedcache.New(cfg.MaxMemoryKeys),
 		}, nil
 	}
 
@@ -70,12 +74,13 @@ func New(cfg Config) (Limiter, error) {
 	}
 
 	return &limiterImpl{
-		cfg:         cfg,
-		primary:     redisBackend,
-		fallback:    memBackend,
-		metrics:     m,
-		algoName:    algoName,
-		backendName: "redis",
+		cfg:          cfg,
+		primary:      redisBackend,
+		fallback:     memBackend,
+		metrics:      m,
+		algoName:     algoName,
+		backendName:  "redis",
+		blockedCache: blockedcache.New(cfg.MaxMemoryKeys),
 	}, nil
 }
 
@@ -86,9 +91,36 @@ func (l *limiterImpl) Allow(ctx context.Context, key string) (*Result, error) {
 func (l *limiterImpl) AllowN(ctx context.Context, key string, n int) (*Result, error) {
 	start := time.Now()
 
+	// Short-circuit: if this key was recently rejected, don't hit the backend
+	// again. Only rejections are cached, so this can only over-block briefly.
+	if l.blockedCache != nil && l.blockedCache.Get(key) {
+		l.metrics.BlockedCacheHits.Inc()
+		return &Result{
+			Allowed:    false,
+			Remaining:  0,
+			RetryAfter: jitter.Jitter(time.Second),
+			Limit:      l.cfg.Limit,
+			Window:     l.cfg.Window,
+			Algorithm:  l.cfg.Algorithm,
+		}, nil
+	}
+
 	br, backendUsed, err := l.evaluate(ctx, key, n)
 	if err != nil {
 		return nil, err
+	}
+
+	retryAfter := br.RetryAfter
+	if !br.Allowed {
+		if l.blockedCache != nil {
+			ttl := retryAfter
+			if ttl <= 0 || ttl > time.Second {
+				ttl = time.Second
+			}
+			l.blockedCache.Set(key, ttl)
+		}
+		// Jitter only the externally-visible value; internal state stays exact.
+		retryAfter = jitter.Jitter(retryAfter)
 	}
 
 	latency := time.Since(start)
@@ -97,7 +129,7 @@ func (l *limiterImpl) AllowN(ctx context.Context, key string, n int) (*Result, e
 	return &Result{
 		Allowed:    br.Allowed,
 		Remaining:  br.Remaining,
-		RetryAfter: br.RetryAfter,
+		RetryAfter: retryAfter,
 		Limit:      l.cfg.Limit,
 		Window:     l.cfg.Window,
 		Algorithm:  l.cfg.Algorithm,

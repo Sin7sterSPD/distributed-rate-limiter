@@ -18,11 +18,11 @@ func EchoMiddleware(limiter rl.Limiter, keyFunc rl.KeyFunc) echo.MiddlewareFunc 
 			key := keyFunc(c.Request())
 			res, err := limiter.Allow(c.Request().Context(), key)
 			if err != nil {
-				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "rate limiter error"})
+				// Limiter fallback already applied; fail-open rather than 500.
+				return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "rate limiter unavailable"})
 			}
 
-			c.Response().Header().Set("X-RateLimit-Limit", strconv.Itoa(res.Limit))
-			c.Response().Header().Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+			setRateLimitHeaders(c.Response().Header(), res)
 
 			if !res.Allowed {
 				c.Response().Header().Set("Retry-After", strconv.Itoa(int(res.RetryAfter.Seconds())))
