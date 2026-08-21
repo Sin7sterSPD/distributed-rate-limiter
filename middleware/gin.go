@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -18,8 +19,9 @@ func GinMiddleware(limiter rl.Limiter, keyFunc rl.KeyFunc) gin.HandlerFunc {
 		key := keyFunc(c.Request)
 		res, err := limiter.Allow(c.Request.Context(), key)
 		if err != nil {
-			// Limiter fallback already applied; fail-open rather than 500.
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "rate limiter unavailable"})
+			// Even the limiter's own fallback failed; fail open (Flow 4).
+			slog.Warn("ratelimiter unavailable, failing open", "error", err)
+			c.Next()
 			return
 		}
 

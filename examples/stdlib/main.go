@@ -25,7 +25,6 @@ func main() {
 		log.Fatal(err)
 	}
 	defer limiter.Close()
-
 	// IP-based limiting for public endpoints
 	ipMiddleware := middleware.New(middleware.HTTPConfig{
 		Limiter: limiter,

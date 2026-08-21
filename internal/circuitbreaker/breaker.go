@@ -22,7 +22,6 @@ type Config struct {
 	Timeout time.Duration
 }
 
-
 type Breaker struct {
 	mu          sync.Mutex
 	cfg         Config
@@ -30,7 +29,6 @@ type Breaker struct {
 	failures    int
 	lastFailure time.Time
 }
-
 
 func New(cfg Config) *Breaker {
 	if cfg.MaxFailures == 0 {
@@ -71,14 +69,12 @@ func (b *Breaker) Allow() error {
 	}
 }
 
-
 func (b *Breaker) RecordSuccess() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.failures = 0
 	b.state = StateClosed
 }
-
 
 func (b *Breaker) RecordFailure() {
 	b.mu.Lock()

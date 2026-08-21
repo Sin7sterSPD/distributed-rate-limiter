@@ -14,14 +14,10 @@ type Limiter interface {
 	Close() error
 }
 
-
 type Result struct {
-
 	Allowed bool
 
-
 	Remaining int
-
 
 	RetryAfter time.Duration
 

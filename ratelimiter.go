@@ -27,7 +27,7 @@ func New(cfg Config) (Limiter, error) {
 		return nil, err
 	}
 
-	m := metrics.NewMetrics("app")
+	m := metrics.NewMetrics(cfg.MetricsNamespace)
 
 	algoName := "token_bucket"
 	if cfg.Algorithm == SlidingWindow {
@@ -66,6 +66,7 @@ func New(cfg Config) (Limiter, error) {
 		DB:        cfg.RedisDB,
 		Timeout:   cfg.RedisTimeout,
 		KeyPrefix: cfg.KeyPrefix,
+		Metrics:   m,
 	}
 	redisBackend, err := backend.NewRedisBackend(redisCfg)
 	if err != nil {

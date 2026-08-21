@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -41,10 +42,12 @@ func New(cfg HTTPConfig) func(http.Handler) http.Handler {
 
 			res, err := cfg.Limiter.Allow(r.Context(), key)
 			if err != nil {
-				// The limiter's own FallbackMode handles backend failures; an
-				// error here means even the fallback failed. Fail-open (let the
-				// request through) rather than taking the API down with 500s.
-				http.Error(w, `{"error":"rate limiter unavailable"}`, http.StatusServiceUnavailable)
+				// Even the limiter's own fallback failed. Fail open: availability
+				// beats enforcement (design notes, Flow 4). The fail-open vs
+				// fail-closed policy is owned by the limiter via Config.Fallback;
+				// this is the last resort when even that path errored.
+				slog.Warn("ratelimiter unavailable, failing open", "error", err)
+				next.ServeHTTP(w, r)
 				return
 			}
 

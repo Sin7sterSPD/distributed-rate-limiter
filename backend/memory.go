@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Sin7sterSPD/distributed-rate-limiter/algorithm"
@@ -25,14 +26,19 @@ type MemoryConfig struct {
 }
 
 type MemoryBackend struct {
-	cfg     MemoryConfig
-	entries *shardmap.ShardedMap[*memoryEntry]
-	tbCfg   *algorithm.TokenBucketConfig
-	swCfg   *algorithm.SlidingWindowConfig
-	stopCh  chan struct{}
+	cfg       MemoryConfig
+	entries   *shardmap.ShardedMap[*memoryEntry]
+	tbCfg     *algorithm.TokenBucketConfig
+	swCfg     *algorithm.SlidingWindowConfig
+	stopCh    chan struct{}
+	closeOnce sync.Once
 }
 
 func NewMemoryBackend(cfg MemoryConfig) *MemoryBackend {
+	if cfg.SweepInterval <= 0 {
+		cfg.SweepInterval = 60 * time.Second
+	}
+
 	mb := &MemoryBackend{
 		cfg:     cfg,
 		entries: shardmap.New[*memoryEntry](),
@@ -130,7 +136,9 @@ func (mb *MemoryBackend) sweeper() {
 }
 
 func (mb *MemoryBackend) Close() error {
-	close(mb.stopCh)
+	mb.closeOnce.Do(func() {
+		close(mb.stopCh)
+	})
 	return nil
 }
 

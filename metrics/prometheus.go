@@ -1,14 +1,28 @@
-
-
-
 package metrics
 
 import (
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+var (
+	metricsOnce sync.Once
+	shared      *Metrics
+)
+
+// NewMetrics returns the process-wide Metrics instance, creating it on the
+// first call. Prometheus collectors are registered globally, so constructing
+// a second set with the same names would panic; every caller therefore shares
+// one instance. The namespace of the first call wins.
+func NewMetrics(namespace string) *Metrics {
+	metricsOnce.Do(func() {
+		shared = newMetrics(namespace)
+	})
+	return shared
+}
 
 type Metrics struct {
 	RequestsTotal    *prometheus.CounterVec
@@ -20,7 +34,7 @@ type Metrics struct {
 	BreakerState     *prometheus.GaugeVec
 }
 
-func NewMetrics(namespace string) *Metrics {
+func newMetrics(namespace string) *Metrics {
 	return &Metrics{
 		RequestsTotal: promauto.NewCounterVec(
 			prometheus.CounterOpts{

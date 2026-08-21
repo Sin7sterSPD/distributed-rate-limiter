@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"time"
 
@@ -36,6 +37,10 @@ type RedisConfig struct {
 	// BreakerTimeout is how long the breaker stays open before probing.
 	// Default: 10s.
 	BreakerTimeout time.Duration
+
+	// Metrics is the shared metrics instance. If nil, the process-wide
+	// singleton is used.
+	Metrics *metrics.Metrics
 }
 
 type RedisBackend struct {
@@ -67,12 +72,17 @@ func NewRedisBackend(cfg RedisConfig) (*RedisBackend, error) {
 		Timeout:     cfg.BreakerTimeout,
 	}
 
+	m := cfg.Metrics
+	if m == nil {
+		m = metrics.NewMetrics("app")
+	}
+
 	rb := &RedisBackend{
 		client:  client,
 		script:  script,
 		cfg:     cfg,
 		breaker: circuitbreaker.New(breakerCfg),
-		metrics: metrics.NewMetrics("app"),
+		metrics: m,
 	}
 	rb.observeBreaker()
 
@@ -99,7 +109,12 @@ func (rb *RedisBackend) GetAndUpdate(ctx context.Context, key string, cost int) 
 
 	fullKey := fmt.Sprintf("%s:%s", rb.cfg.KeyPrefix, key)
 	nowMs := time.Now().UnixMilli()
-	ttlSecs := int64(rb.cfg.Window.Seconds()) * 2
+	// TTL = 2x window, rounded up with a floor of 1s. A naive int truncation
+	// turns sub-second windows into EXPIRE 0, which DELETES the key.
+	ttlSecs := int64(math.Ceil(rb.cfg.Window.Seconds() * 2))
+	if ttlSecs < 1 {
+		ttlSecs = 1
+	}
 
 	var args []interface{}
 

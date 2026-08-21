@@ -46,7 +46,9 @@ local used = curr + prev * weight
 if used + cost <= limit then
     curr = curr + cost
     redis.call("HMSET", key, "prev", prev, "curr", curr, "start", start)
-    redis.call("EXPIRE", key, ttl)
+    if ttl > 0 then
+        redis.call("EXPIRE", key, ttl)
+    end
     local remaining = limit - math.ceil(used) - cost
     if remaining < 0 then remaining = 0 end
     return {1, remaining, 0}

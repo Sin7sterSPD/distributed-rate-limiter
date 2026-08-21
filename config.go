@@ -49,6 +49,10 @@ type Config struct {
 	// MemorySweepInterval is how often the memory backend sweeper runs
 	// to clean up expired keys. Default: 60s.
 	MemorySweepInterval time.Duration
+
+	// MetricsNamespace is the Prometheus namespace for exported metrics.
+	// Applies once per process (metrics are shared globally). Default: "app".
+	MetricsNamespace string
 }
 
 func (c *Config) validate() error {
@@ -81,6 +85,9 @@ func (c *Config) validate() error {
 	}
 	if c.MemorySweepInterval == 0 {
 		c.MemorySweepInterval = 60 * time.Second
+	}
+	if c.MetricsNamespace == "" {
+		c.MetricsNamespace = "app"
 	}
 	return nil
 }

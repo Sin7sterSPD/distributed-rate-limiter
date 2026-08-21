@@ -25,7 +25,9 @@ local elapsed    = math.max(0, now - last_update) / 1000.0
 local new_tokens = math.min(capacity, tokens + elapsed * refill_rate)
 
 redis.call("HMSET", key, "tokens", new_tokens, "last_update", now)
-redis.call("EXPIRE", key, ttl)
+if ttl > 0 then
+    redis.call("EXPIRE", key, ttl)
+end
 
 if new_tokens >= cost then
     new_tokens = new_tokens - cost
